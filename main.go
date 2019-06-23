@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"os"
 	"strings"
+	"time"
 )
 
 var inputFileName = flag.String("csv", "problems.csv",
@@ -16,6 +18,8 @@ var inputFileName = flag.String("csv", "problems.csv",
 
 var limit = flag.Int("limit", 30,
 	"the time limit for the quiz in seconds")
+
+var shuffle = flag.Bool("shuffle", false, "shuffle questions")
 
 type question struct {
 	question, answer string
@@ -26,20 +30,32 @@ func main() {
 
 	reader := makeCsvReader(*inputFileName)
 	questions := parseQuestions(reader)
+
+	if *shuffle {
+		rand.Seed(time.Now().UnixNano())
+		rand.Shuffle(len(questions), func(i, j int) {
+			questions[i], questions[j] = questions[j], questions[i]
+		})
+	}
+
+	inputReader := bufio.NewReader(os.Stdin)
+	fmt.Print("Press a key to start quiz")
+	inputReader.ReadRune()
+	correctChan, endChan := startQuiz(questions)
+	timerChan := time.After(time.Duration(*limit) * time.Second)
+
 	numCorrect := 0
 
-	scanner := bufio.NewScanner(os.Stdin)
-	for i, q := range questions {
-		fmt.Printf("Problem #%d: %s = ", i+1, q.question)
-		ok := scanner.Scan()
-		err := scanner.Err()
-		if !ok && err != nil {
-			log.Fatalf("error reading from input: %s", err)
-		}
-
-		answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
-		if answer == q.answer {
+MainLoop:
+	for {
+		select {
+		case <-correctChan:
 			numCorrect++
+		case <-endChan:
+			break MainLoop
+		case <-timerChan:
+			fmt.Println()
+			break MainLoop
 		}
 	}
 
@@ -76,4 +92,30 @@ func parseQuestions(r io.Reader) []question {
 	}
 
 	return questions
+}
+
+func startQuiz(questions []question) (<-chan bool, <-chan bool) {
+	correctChan, endChan := make(chan bool, 0), make(chan bool, 0)
+	go func(questions []question) {
+		scanner := bufio.NewScanner(os.Stdin)
+		for i, q := range questions {
+			fmt.Printf("Problem #%d: %s = ", i+1, q.question)
+			ok := scanner.Scan()
+			err := scanner.Err()
+			if !ok && err != nil {
+				log.Fatalf("error reading from input: %s", err)
+			}
+
+			answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
+			if answer == q.answer {
+				correctChan <- true
+			}
+		}
+
+		endChan <- true
+		close(correctChan)
+		close(endChan)
+	}(questions)
+
+	return correctChan, endChan
 }
